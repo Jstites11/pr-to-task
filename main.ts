@@ -1,134 +1,165 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Plugin, Notice, TFile } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
-
-interface MyPluginSettings {
-	mySetting: string;
+interface PRToTaskSettings {
+    githubToken: string;
+    prFilter: string;
+    taskFilePath: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: PRToTaskSettings = {
+    githubToken: '',
+    prFilter: 'is:open is:pr author:@me',
+    taskFilePath: 'Tasks.md'
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+export default class PRToTaskPlugin extends Plugin {
+    settings: PRToTaskSettings;
+    async onload() {
+        await this.loadSettings();
 
-	async onload() {
-		await this.loadSettings();
+        // Add a simple command to get PRs
+        this.addCommand({
+            id: 'get-prs',
+            name: 'Get PRs',
+            callback: () => {
+                this.getPRs();
+            }
+        });
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
+        // Add settings tab
+        this.addSettingTab(new PRToTaskSettingTab(this.app, this));
+    }
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
+    onunload() {
+        // Clean up resources if needed
+    }
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+    async getPRs() {
+        // This is where you would add code to fetch PRs
+        // For now, just show a notice
 
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
+        new Notice('Getting PRs...');
+        console.log('Getting PRs with token:', this.settings.githubToken ? 'Token exists' : 'No token');
+        console.log('Using PR filter:', this.settings.prFilter);
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
+		// Call the github api to fetch the PR data
+		const prData = await this.fetchPRData(this.settings.githubToken, this.settings.prFilter);
+		console.log('Received PR data:', prData);
+		// Create obsidian task using the fetched dat
+		this.createObsidianTasks(prData);
+    }
 
-	onunload() {
+	fetchPRData(token: string, filter: string): Promise<any> {
+		// Make a request to the GitHub API for pull requests
+		return fetch(`https://api.github.com/search/issues?q=is:pull-request ${filter}`, {
+            headers: {
+                'Authorization': `token ${token}`,
+                'Accept': 'application/vnd.github.v3+json'
+            }
+        })
+       .then(response => response.json())
+       .then(data => data.items);
+    }
 
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
+	createObsidianTasks(prData: any) {
+        // Check if the task file exists
+        const taskFile = this.app.vault.getAbstractFileByPath(this.settings.taskFilePath);
+        
+        if (!taskFile) {
+            console.log('Task file does not exist. Creating it...');
+            this.app.vault.create(this.settings.taskFilePath, "# GitHub Pull Requests\n\n").then(() => {
+                // After creating the file, add the tasks
+                this.appendTasksToFile(prData);
+            });
+        } else if (taskFile instanceof TFile) {
+            // If file exists, append tasks to it
+            this.appendTasksToFile(prData);
+        } else {
+            new Notice('Task file path exists but is not a file');
+        }
+    }
+    
+    async appendTasksToFile(prData: any) {
+        const taskFile = this.app.vault.getAbstractFileByPath(this.settings.taskFilePath);
+        
+        if (taskFile instanceof TFile) {
+            // Read existing content
+            let tasksContent = ""
+            
+            // Add each PR as a task
+            if (Array.isArray(prData)) {
+                for (const pr of prData) {
+                    // if PR status is closed, mark the task as completed
+                    const isClosed = pr.state === 'closed';
+                    const taskLine = `- [${isClosed? 'x' : ' '}] [${pr.title}](${pr.html_url}) #github-pr\n`;
+                    tasksContent += taskLine;
+                }
+            }
+            
+            // Write back to file
+            await this.app.vault.modify(taskFile, tasksContent);
+            new Notice('PR tasks added to your task file');
+        }
+    }
+    
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+import { PluginSettingTab, Setting } from 'obsidian';
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+class PRToTaskSettingTab extends PluginSettingTab {
+    plugin: PRToTaskPlugin;
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
+    constructor(app: App, plugin: PRToTaskPlugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
 
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+    display(): void {
+        const {containerEl} = this;
 
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
+        containerEl.empty();
 
-	display(): void {
-		const {containerEl} = this;
+        new Setting(containerEl)
+            .setName('GitHub Token')
+            .setDesc('Enter your GitHub personal access token')
+            .addText(text => text
+                .setPlaceholder('Enter your GitHub token')
+                .setValue(this.plugin.settings.githubToken)
+                .onChange(async (value) => {
+                    this.plugin.settings.githubToken = value;
+                    await this.plugin.saveSettings();
+                }));
 
-		containerEl.empty();
+        new Setting(containerEl)
+            .setName('PR Filter')
+            .setDesc('Enter GitHub search query to filter pull requests (e.g., "is:open is:pr author:@me")')
+            .addText(text => text
+                .setPlaceholder('is:open is:pr author:@me')
+                .setValue(this.plugin.settings.prFilter)
+                .onChange(async (value) => {
+                    this.plugin.settings.prFilter = value;
+                    await this.plugin.saveSettings();
+                }));
+        
+                // add file location setting for where to save tasks
 
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+        new Setting(containerEl)
+           .setName('File Location')
+           .setDesc('Enter the path where you want to save your Obsidian tasks')
+           .addText(text => text
+                .setPlaceholder('/path/to/tasks.md')
+                .setValue(this.plugin.settings.taskFilePath)
+                .onChange(async (value) => {
+                    this.plugin.settings.taskFilePath = value;
+                    await this.plugin.saveSettings();
+                }));
+    }
 }
